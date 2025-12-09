@@ -12,12 +12,15 @@ This repository contains a Node.js script (`voting.js`) that:
 
 ## 📁 Repository Structure
 
+```text
 hive-multi-voter/
 │
 ├── voting.js
 ├── .env.example
 ├── package.json
 └── README.md
+```
+
 
 
 ---
