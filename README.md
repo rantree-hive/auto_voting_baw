@@ -31,12 +31,13 @@ hive-multi-voter/
 git clone https://github.com/yourname/hive-multi-voter.git
 cd hive-multi-voter
 
-npm install @hiveio/dhive dotenv ```
+npm install @hiveio/dhive dotenv
+```
 
 ## 🔐 2. .env Example (supports unlimited accounts)
 
 Create a file named .env:
-
+```
 TARGET_AUTHOR=buildawhale
 MIN_VOTING_POWER=8000
 VOTE_WEIGHT=10000
@@ -55,13 +56,13 @@ ACCOUNT_3_POSTING_KEY="your private key"
 
 ACCOUNT_4_USERNAME=antiabuse18
 ACCOUNT_4_POSTING_KEY="your private key"
-
+```
 
 To add more accounts, simply continue:
-
+```
 ACCOUNT_5_USERNAME="..."
 ACCOUNT_5_POSTING_KEY="..."
+```
 
-
-▶️ 3. Running the Script
+## ▶️ 3. Running the Script
 node voting.js
