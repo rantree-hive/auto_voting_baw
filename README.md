@@ -31,9 +31,9 @@ hive-multi-voter/
 git clone https://github.com/yourname/hive-multi-voter.git
 cd hive-multi-voter
 
-npm install @hiveio/dhive dotenv
+npm install @hiveio/dhive dotenv ```
 
-🔐 2. .env Example (supports unlimited accounts)
+## 🔐 2. .env Example (supports unlimited accounts)
 
 Create a file named .env:
 
