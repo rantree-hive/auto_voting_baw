@@ -1,0 +1,33 @@
+name: Hive Burn Post Voter
+ 
+on:
+  schedule:
+    # Runs every day at 23:50 UTC
+    - cron: '50 23 * * *'
+ 
+  # Allows you to trigger the workflow manually from the Actions tab
+  workflow_dispatch:
+ 
+jobs:
+  vote:
+    runs-on: ubuntu-latest
+ 
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+ 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+ 
+      - name: Install dependencies
+        run: npm install
+ 
+      - name: Run voter script
+        env:
+          HIVE_USERNAME: ${{ secrets.HIVE_USERNAME }}
+          HIVE_POSTING_KEY: ${{ secrets.HIVE_POSTING_KEY }}
+        run: node hive_burn_voter.js --run-once
+ 
