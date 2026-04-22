@@ -3,12 +3,14 @@
  * ==================================
  * Uses @hiveio/dhive + dotenv (Node.js)
  *
- * What it does:
- *   1. Checks VP before the run — aborts if below MIN_VOTING_POWER
- *   2. Finds today's @buildawhale burn post
- *   3. Re-checks VP before EVERY individual vote — stops immediately if it
- *      drops below threshold mid-run (same logic as rantree-hive/auto_voting_baw)
- *   4. Votes on the burn post + all @buildawhale burn comments on that post
+ * Supports unlimited accounts configured via .env or GitHub Secrets.
+ * Each account can independently vote on:
+ *   - The burn post + burn comments  (ACCOUNT_N_VOTE_POST=true)
+ *   - Burn comments only             (ACCOUNT_N_VOTE_POST=false)
+ *
+ * Both modes:
+ *   - Check VP before the run — skip account if below MIN_VOTING_POWER
+ *   - Re-check VP before EVERY individual vote — stop immediately if it drops
  *
  * Setup:
  *   npm install @hiveio/dhive dotenv node-cron
@@ -17,9 +19,12 @@
  *   node hive_burn_voter.js              → cron scheduler (23:50 UTC daily)
  *   node hive_burn_voter.js --run-once   → run immediately and exit (GitHub Actions)
  *
- * Credentials:
- *   Local  → create a .env file (see .env.example)
- *   GitHub → set HIVE_USERNAME and HIVE_POSTING_KEY as repo secrets
+ * Adding accounts:
+ *   In .env or GitHub Secrets, add numbered sets:
+ *     ACCOUNT_1_USERNAME, ACCOUNT_1_POSTING_KEY, ACCOUNT_1_VOTE_POST
+ *     ACCOUNT_2_USERNAME, ACCOUNT_2_POSTING_KEY, ACCOUNT_2_VOTE_POST
+ *     ACCOUNT_3_USERNAME, ACCOUNT_3_POSTING_KEY, ACCOUNT_3_VOTE_POST
+ *     ... and so on
  */
 
 'use strict';
@@ -28,38 +33,59 @@ require('dotenv').config();
 const dhive = require('@hiveio/dhive');
 const cron  = require('node-cron');
 
-// ─────────────────────────── CONFIG ───────────────────────────────────────────
+// ─────────────────────────── GLOBAL CONFIG ────────────────────────────────────
 
-const CONFIG = {
-  username:   process.env.HIVE_USERNAME    || 'your-hive-username',
-  postingKey: process.env.HIVE_POSTING_KEY || '5Jxxx...',
+const TARGET_AUTHOR          = process.env.TARGET_AUTHOR           || 'buildawhale';
+const MIN_VOTING_POWER       = parseInt(process.env.MIN_VOTING_POWER       || '8000', 10); // 8000 = 80%
+const VOTE_WEIGHT            = parseInt(process.env.VOTE_WEIGHT            || '10000', 10);
+const HOURS_BACK             = parseInt(process.env.HOURS_BACK             || '24', 10);
+const DELAY_BETWEEN_VOTES    = parseInt(process.env.DELAY_BETWEEN_VOTES    || '3000', 10);
+const DELAY_BETWEEN_ACCOUNTS = parseInt(process.env.DELAY_BETWEEN_ACCOUNTS || '5000', 10);
 
-  targetAuthor: process.env.TARGET_AUTHOR  || 'buildawhale',
+const CRON_SCHEDULE = '50 23 * * *'; // every day at 23:50 UTC
 
-  // VP values stored as 0–10000 on chain (8000 = 80%)
-  minVotingPower: parseInt(process.env.MIN_VOTING_POWER  || '8000', 10),
-  voteWeight:     parseInt(process.env.VOTE_WEIGHT       || '10000', 10),
+const NODES = [
+  'https://api.hive.blog',
+  'https://api.deathwing.me',
+  'https://hive-api.arcange.eu',
+  'https://anyx.io',
+];
 
-  // How far back (in hours) to look for today's burn post
-  hoursBack: parseInt(process.env.HOURS_BACK || '24', 10),
+// ──────────────────────── LOAD ACCOUNTS DYNAMICALLY ──────────────────────────
+// Reads ACCOUNT_1_*, ACCOUNT_2_*, ACCOUNT_3_* ... from env until it finds
+// a gap. Stops at the first missing USERNAME.
 
-  // Delays in ms between votes
-  delayBetweenVotes: parseInt(process.env.DELAY_BETWEEN_VOTES || '3000', 10),
+function loadAccounts() {
+  const accounts = [];
+  let i = 1;
 
-  cronSchedule: '50 23 * * *', // every day at 23:50 UTC
+  while (true) {
+    const username   = process.env[`ACCOUNT_${i}_USERNAME`];
+    const postingKey = process.env[`ACCOUNT_${i}_POSTING_KEY`];
 
-  nodes: [
-    'https://api.hive.blog',
-    'https://api.deathwing.me',
-    'https://hive-api.arcange.eu',
-    'https://anyx.io',
-  ],
-};
+    // Stop when we hit a gap
+    if (!username || !postingKey) break;
+
+    // ACCOUNT_N_VOTE_POST defaults to true if not set
+    const votePost = (process.env[`ACCOUNT_${i}_VOTE_POST`] || 'true').toLowerCase() !== 'false';
+
+    accounts.push({
+      index:      i,
+      label:      `Account ${i}`,
+      username,
+      postingKey,
+      votePost,   // true = votes on post + comments / false = comments only
+    });
+
+    i++;
+  }
+
+  return accounts;
+}
 
 // ──────────────────────────── CLIENT ──────────────────────────────────────────
 
-const client     = new dhive.Client(CONFIG.nodes);
-const postingKey = dhive.PrivateKey.fromString(CONFIG.postingKey);
+const client = new dhive.Client(NODES);
 
 // ──────────────────────────── HELPERS ─────────────────────────────────────────
 
@@ -72,7 +98,7 @@ function sleep(ms) {
 }
 
 /**
- * Calculate CURRENT voting power (0–10000) for an account object.
+ * Calculate current VP (0–10000) from raw account data.
  * Hive regenerates VP at 20% per day (1 unit per 1.728 seconds).
  */
 function calcCurrentVP(account) {
@@ -83,8 +109,7 @@ function calcCurrentVP(account) {
 }
 
 /**
- * Fetch fresh account data and return current VP (0–10000).
- * Called before every vote so the check is always up to date.
+ * Fetch live VP (0–10000) for a username directly from the chain.
  */
 async function getLiveVP(username) {
   const [account] = await client.database.getAccounts([username]);
@@ -93,13 +118,14 @@ async function getLiveVP(username) {
 }
 
 /**
- * Find the most recent top-level post by targetAuthor within the last hoursBack hours.
+ * Find the most recent top-level burn post by TARGET_AUTHOR
+ * published within the last HOURS_BACK hours.
  */
 async function findLatestBurnPost() {
-  const cutoff = Date.now() - CONFIG.hoursBack * 60 * 60 * 1000;
+  const cutoff = Date.now() - HOURS_BACK * 60 * 60 * 1000;
 
   const posts = await client.database.getDiscussions('blog', {
-    tag:   CONFIG.targetAuthor,
+    tag:   TARGET_AUTHOR,
     limit: 10,
   });
 
@@ -113,57 +139,118 @@ async function findLatestBurnPost() {
 }
 
 /**
- * Fetch all replies on a post authored by targetAuthor.
+ * Fetch all replies on a post authored by TARGET_AUTHOR.
  */
 async function findBurnComments(post) {
   const replies = await client.database.call('get_content_replies', [
     post.author,
     post.permlink,
   ]);
-  return replies.filter(r => r.author === CONFIG.targetAuthor);
+  return replies.filter(r => r.author === TARGET_AUTHOR);
 }
 
 /**
- * Attempt to vote on a single piece of content.
- * Re-checks VP immediately before voting — returns false if VP is too low
- * so the caller can stop the loop.
+ * Cast a single vote for a given account.
+ * Re-checks VP before every vote.
+ * Returns false if VP is too low — caller should stop the loop.
  */
-async function voteOn(content, label) {
-  // ── Re-check VP before every single vote ──────────────────────────────────
-  const { vp } = await getLiveVP(CONFIG.username);
+async function voteOn(acc, content, label) {
+  // Re-check VP live before every vote
+  const { vp } = await getLiveVP(acc.username);
   const vpPct  = (vp / 100).toFixed(2);
 
-  if (vp < CONFIG.minVotingPower) {
-    log(`🛑 VP dropped to ${vpPct}% (min: ${CONFIG.minVotingPower / 100}%) — stopping all votes.`);
-    return false; // signal caller to stop
+  if (vp < MIN_VOTING_POWER) {
+    log(`  🛑 [${acc.label}] VP dropped to ${vpPct}% (min: ${MIN_VOTING_POWER / 100}%) — stopping.`);
+    return false;
   }
 
-  log(`  ⚡ VP is ${vpPct}% — proceeding to vote on ${label}`);
+  log(`  ⚡ [${acc.label}] VP ${vpPct}% — voting on ${label}`);
 
-  // ── Skip if already voted ──────────────────────────────────────────────────
-  const alreadyVoted = content.active_votes.some(v => v.voter === CONFIG.username);
+  // Skip if already voted
+  const alreadyVoted = content.active_votes.some(v => v.voter === acc.username);
   if (alreadyVoted) {
-    log(`  ⚠️  Already voted on ${label} — skipping.`);
-    return true; // not a stop condition, just skip
+    log(`  ⚠️  [${acc.label}] Already voted on ${label} — skipping.`);
+    return true;
   }
 
-  // ── Cast vote ─────────────────────────────────────────────────────────────
+  // Cast the vote
   try {
+    const key = dhive.PrivateKey.fromString(acc.postingKey);
     await client.broadcast.vote(
       {
-        voter:    CONFIG.username,
+        voter:    acc.username,
         author:   content.author,
         permlink: content.permlink,
-        weight:   CONFIG.voteWeight,
+        weight:   VOTE_WEIGHT,
       },
-      postingKey
+      key
     );
-    log(`  ✅  Voted on ${label} (@${content.author}/${content.permlink})`);
+    log(`  ✅  [${acc.label}] Voted on ${label} (@${content.author}/${content.permlink})`);
   } catch (err) {
-    log(`  ❌  Failed to vote on ${label}: ${err.message}`);
+    log(`  ❌  [${acc.label}] Failed to vote on ${label}: ${err.message}`);
   }
 
-  return true; // continue
+  return true;
+}
+
+/**
+ * Run the full voting routine for a single account.
+ * burnPost and burnComments are fetched once and passed in.
+ */
+async function runForAccount(acc, burnPost, burnComments) {
+  log(`─────────────────────────────────────────`);
+  log(`👤 [${acc.label}] @${acc.username} | mode: ${acc.votePost ? 'post + comments' : 'comments only'}`);
+
+  // Initial VP check for this account
+  const { vp: initialVP } = await getLiveVP(acc.username);
+  const initialPct = (initialVP / 100).toFixed(2);
+  log(`  ⚡ VP: ${initialPct}% (threshold: ${MIN_VOTING_POWER / 100}%)`);
+
+  if (initialVP < MIN_VOTING_POWER) {
+    log(`  🛑 VP too low — skipping this account.`);
+    return;
+  }
+
+  // ── Vote on main burn post (only if ACCOUNT_N_VOTE_POST=true) ─────────────
+  if (acc.votePost) {
+    log(`  🗳️  Voting on burn post…`);
+    const fullPost = await client.database.call('get_content', [
+      burnPost.author,
+      burnPost.permlink,
+    ]);
+
+    const continueAfterPost = await voteOn(acc, fullPost, 'burn post');
+    if (!continueAfterPost) return;
+
+    await sleep(DELAY_BETWEEN_VOTES);
+  } else {
+    log(`  ℹ️  Skipping main post (comments only mode).`);
+  }
+
+  // ── Vote on burn comments ─────────────────────────────────────────────────
+  if (burnComments.length === 0) {
+    log(`  ℹ️  No burn comments to vote on.`);
+    return;
+  }
+
+  log(`  💬 Voting on ${burnComments.length} burn comment(s)…`);
+
+  for (const comment of burnComments) {
+    const fullComment = await client.database.call('get_content', [
+      comment.author,
+      comment.permlink,
+    ]);
+
+    const shouldContinue = await voteOn(acc, fullComment, 'burn comment');
+    if (!shouldContinue) {
+      log(`  🛑 [${acc.label}] Stopped mid-comments due to low VP.`);
+      break;
+    }
+
+    await sleep(DELAY_BETWEEN_VOTES);
+  }
+
+  log(`  🎉 [${acc.label}] Done.`);
 }
 
 // ──────────────────────────── MAIN JOB ────────────────────────────────────────
@@ -172,70 +259,47 @@ async function runJob() {
   log('═══════════════════════════════════════════');
   log('Starting @buildawhale burn post voter job…');
 
-  // 1. Initial VP check — abort early if already below threshold
-  const { vp: initialVP } = await getLiveVP(CONFIG.username);
-  const initialPct = (initialVP / 100).toFixed(2);
-  log(`⚡ Current VP: ${initialPct}% (threshold: ${CONFIG.minVotingPower / 100}%)`);
+  // Load accounts dynamically from env
+  const accounts = loadAccounts();
 
-  if (initialVP < CONFIG.minVotingPower) {
-    log(`🛑 VP too low to start. Skipping today's run.`);
+  if (accounts.length === 0) {
+    log('❌ No accounts configured. Add ACCOUNT_1_USERNAME and ACCOUNT_1_POSTING_KEY to your .env or GitHub Secrets.');
     return;
   }
 
-  // 2. Find the burn post
-  log(`🔍 Looking for @${CONFIG.targetAuthor}'s latest burn post (last ${CONFIG.hoursBack}h)…`);
+  log(`📋 Accounts loaded: ${accounts.length}`);
+  accounts.forEach(a => {
+    log(`   • ${a.label}: @${a.username} [${a.votePost ? 'post + comments' : 'comments only'}]`);
+  });
+
+  // Fetch burn post and comments once — shared across all accounts
+  log(`🔍 Looking for @${TARGET_AUTHOR}'s latest burn post (last ${HOURS_BACK}h)…`);
   const burnPost = await findLatestBurnPost();
 
   if (!burnPost) {
-    log(`⚠️  No burn post found in the last ${CONFIG.hoursBack} hours.`);
+    log(`⚠️  No burn post found in the last ${HOURS_BACK} hours.`);
     return;
   }
 
   log(`📄 Found: "${burnPost.title}" (${burnPost.permlink})`);
 
-  // 3. Vote on the burn post (VP re-checked inside voteOn)
-  log('🗳️  Voting on burn post…');
-  const fullPost = await client.database.call('get_content', [
-    burnPost.author,
-    burnPost.permlink,
-  ]);
-
-  const continueAfterPost = await voteOn(fullPost, 'burn post');
-  if (!continueAfterPost) {
-    log('🛑 Stopped after burn post vote due to low VP.');
-    return;
-  }
-
-  await sleep(CONFIG.delayBetweenVotes);
-
-  // 4. Find and vote on burn comments — stops loop if VP drops mid-run
-  log(`💬 Looking for @${CONFIG.targetAuthor} comments on the burn post…`);
+  log(`💬 Fetching @${TARGET_AUTHOR} burn comments…`);
   const burnComments = await findBurnComments(burnPost);
+  log(`   Found ${burnComments.length} burn comment(s).`);
 
-  if (burnComments.length === 0) {
-    log('  ℹ️  No burn comments found.');
-  } else {
-    log(`  Found ${burnComments.length} burn comment(s). Voting…`);
+  // Process each account sequentially
+  for (let i = 0; i < accounts.length; i++) {
+    await runForAccount(accounts[i], burnPost, burnComments);
 
-    for (const comment of burnComments) {
-      const fullComment = await client.database.call('get_content', [
-        comment.author,
-        comment.permlink,
-      ]);
-
-      const shouldContinue = await voteOn(fullComment, 'burn comment');
-
-      if (!shouldContinue) {
-        log('🛑 Stopped mid-comments due to VP dropping below threshold.');
-        break; // ← key behaviour: stops the loop immediately
-      }
-
-      await sleep(CONFIG.delayBetweenVotes);
+    // Delay between accounts (skip after the last one)
+    if (i < accounts.length - 1) {
+      log(`⏳ Waiting ${DELAY_BETWEEN_ACCOUNTS}ms before next account…`);
+      await sleep(DELAY_BETWEEN_ACCOUNTS);
     }
   }
 
-  log('🎉 Job complete!');
   log('═══════════════════════════════════════════');
+  log(`✅ All ${accounts.length} account(s) processed.`);
 }
 
 // ──────────────────────────── ENTRYPOINT ──────────────────────────────────────
@@ -251,12 +315,12 @@ if (runOnce) {
       process.exit(1);
     });
 } else {
-  log(`🕐 Scheduler started. Cron: "${CONFIG.cronSchedule}" (UTC)`);
-  log(`   Account    : @${CONFIG.username}`);
-  log(`   Min VP     : ${CONFIG.minVotingPower / 100}%`);
-  log(`   Vote weight: ${CONFIG.voteWeight / 100}%`);
+  log(`🕐 Scheduler started. Cron: "${CRON_SCHEDULE}" (UTC)`);
+  log(`   Target       : @${TARGET_AUTHOR}`);
+  log(`   Min VP       : ${MIN_VOTING_POWER / 100}%`);
+  log(`   Vote weight  : ${VOTE_WEIGHT / 100}%`);
 
-  cron.schedule(CONFIG.cronSchedule, () => {
+  cron.schedule(CRON_SCHEDULE, () => {
     runJob().catch(err => log(`💥 Unhandled error: ${err.message}`));
   }, { timezone: 'UTC' });
 }
