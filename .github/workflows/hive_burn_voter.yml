@@ -2,7 +2,8 @@ name: Hive Burn Post Voter
 
 on:
   schedule:
-    # Runs every day at 23:50 UTC
+    # Edit this line to change the run time. Format: 'MINUTE HOUR * * *' (UTC)
+    # Examples: '50 23 * * *' = 23:50 UTC · '0 17 * * *' = 17:00 UTC
     - cron: '50 23 * * *'
 
   # Allows you to trigger the workflow manually from the Actions tab
@@ -27,26 +28,27 @@ jobs:
 
       - name: Run voter script
         env:
-          TARGET_AUTHOR: buildawhale
-          MIN_VOTING_POWER: 8000
-          VOTE_WEIGHT: 10000
-          HOURS_BACK: 24
-          DELAY_BETWEEN_VOTES: 3000
+          # ── Voter config (override via secrets or leave defaults in the script)
+          TARGET_AUTHOR:    ${{ secrets.TARGET_AUTHOR }}
+          MIN_VOTING_POWER: ${{ secrets.MIN_VOTING_POWER }}
+          VOTE_WEIGHT:      ${{ secrets.VOTE_WEIGHT }}
+          HOURS_BACK:       ${{ secrets.HOURS_BACK }}
+          DELAY_BETWEEN_VOTES:    3000
           DELAY_BETWEEN_ACCOUNTS: 5000
 
-          # Account 1 — post + comments
-          ACCOUNT_1_USERNAME: ${{ secrets.ACCOUNT_1_USERNAME }}
+          # ── Account 1 ─────────────────────────────────────────────────────────
+          ACCOUNT_1_USERNAME:    ${{ secrets.ACCOUNT_1_USERNAME }}
           ACCOUNT_1_POSTING_KEY: ${{ secrets.ACCOUNT_1_POSTING_KEY }}
-          ACCOUNT_1_VOTE_POST: "true"
+          ACCOUNT_1_VOTE_POST:   ${{ secrets.ACCOUNT_1_VOTE_POST }}
 
-          # Account 2 — comments only
-          ACCOUNT_2_USERNAME: ${{ secrets.ACCOUNT_2_USERNAME }}
+          # ── Account 2 ─────────────────────────────────────────────────────────
+          ACCOUNT_2_USERNAME:    ${{ secrets.ACCOUNT_2_USERNAME }}
           ACCOUNT_2_POSTING_KEY: ${{ secrets.ACCOUNT_2_POSTING_KEY }}
-          ACCOUNT_2_VOTE_POST: "false"
+          ACCOUNT_2_VOTE_POST:   ${{ secrets.ACCOUNT_2_VOTE_POST }}
 
-          # Account 3 — add more as needed (remove if unused)
-          # ACCOUNT_3_USERNAME: ${{ secrets.ACCOUNT_3_USERNAME }}
+          # ── Account 3+ (uncomment and add secrets as needed) ──────────────────
+          # ACCOUNT_3_USERNAME:    ${{ secrets.ACCOUNT_3_USERNAME }}
           # ACCOUNT_3_POSTING_KEY: ${{ secrets.ACCOUNT_3_POSTING_KEY }}
-          # ACCOUNT_3_VOTE_POST: "true"
+          # ACCOUNT_3_VOTE_POST:   ${{ secrets.ACCOUNT_3_VOTE_POST }}
 
         run: node hive_burn_voter.js --run-once

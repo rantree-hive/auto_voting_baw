@@ -1,6 +1,6 @@
 /**
- * Hive @buildawhale Burn Post Voter
- * ==================================
+ * Hive Burn Post Voter
+ * ====================
  * Uses @hiveio/dhive + dotenv (Node.js)
  *
  * Supports unlimited accounts configured via .env or GitHub Secrets.
@@ -16,14 +16,18 @@
  *   npm install @hiveio/dhive dotenv node-cron
  *
  * Run modes:
- *   node hive_burn_voter.js              → cron scheduler (23:50 UTC daily)
+ *   node hive_burn_voter.js              → cron scheduler (runs at RUN_HOUR_UTC daily)
  *   node hive_burn_voter.js --run-once   → run immediately and exit (GitHub Actions)
+ *
+ * Scheduling (GitHub Actions):
+ *   Set RUN_HOUR_UTC secret (0–23 UTC) to control which hour the voter executes.
+ *   The workflow fires every hour; only the matching hour proceeds.
+ *   Manual workflow_dispatch runs always execute regardless of the hour.
  *
  * Adding accounts:
  *   In .env or GitHub Secrets, add numbered sets:
  *     ACCOUNT_1_USERNAME, ACCOUNT_1_POSTING_KEY, ACCOUNT_1_VOTE_POST
  *     ACCOUNT_2_USERNAME, ACCOUNT_2_POSTING_KEY, ACCOUNT_2_VOTE_POST
- *     ACCOUNT_3_USERNAME, ACCOUNT_3_POSTING_KEY, ACCOUNT_3_VOTE_POST
  *     ... and so on
  */
 
@@ -42,7 +46,17 @@ const HOURS_BACK             = parseInt(process.env.HOURS_BACK             || '2
 const DELAY_BETWEEN_VOTES    = parseInt(process.env.DELAY_BETWEEN_VOTES    || '3000', 10);
 const DELAY_BETWEEN_ACCOUNTS = parseInt(process.env.DELAY_BETWEEN_ACCOUNTS || '5000', 10);
 
-const CRON_SCHEDULE = '50 23 * * *'; // every day at 23:50 UTC
+// RUN_HOUR_UTC / RUN_MINUTE_UTC — only used by the local cron scheduler mode.
+// In GitHub Actions the schedule is controlled by the cron line in the YAML.
+const RUN_HOUR_UTC   = process.env.RUN_HOUR_UTC   !== undefined && process.env.RUN_HOUR_UTC   !== ''
+  ? parseInt(process.env.RUN_HOUR_UTC,   10) : null;
+const RUN_MINUTE_UTC = process.env.RUN_MINUTE_UTC !== undefined && process.env.RUN_MINUTE_UTC !== ''
+  ? parseInt(process.env.RUN_MINUTE_UTC, 10) : null;
+
+// Build cron schedule from env vars if provided, otherwise fall back to 23:50 UTC.
+const CRON_SCHEDULE = (RUN_HOUR_UTC !== null)
+  ? `${RUN_MINUTE_UTC ?? 0} ${RUN_HOUR_UTC} * * *`
+  : '50 23 * * *';
 
 const NODES = [
   'https://api.hive.blog',
