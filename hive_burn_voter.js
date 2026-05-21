@@ -60,9 +60,9 @@ const CRON_SCHEDULE = (RUN_HOUR_UTC !== null)
 
 const NODES = [
   'https://api.hive.blog',
-  'https://api.deathwing.me',
-  'https://hive-api.arcange.eu',
-  'https://anyx.io',
+  'https://api.openhive.network',
+  'https://hapi.ecency.com',
+  'https://rpc.mahdiyari.info',
 ];
 
 // ──────────────────────── LOAD ACCOUNTS DYNAMICALLY ──────────────────────────
